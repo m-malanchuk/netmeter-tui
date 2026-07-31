@@ -1,0 +1,45 @@
+# Compiled binaries and libraries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Build and release output
+/bin/
+/build/
+/dist/
+/gonload
+/netmeter-tui
+
+# Coverage, benchmarks, and profiles
+coverage*.out
+coverage*.html
+*.prof
+
+# Local Go workspaces
+go.work
+go.work.sum
+
+# Environment and temporary files
+.env
+.env.*
+!.env.example
+*.log
+*.tmp
+*.swp
+*~
+
+# Editors and operating systems
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+
+# Private project notes and assistant configuration
+/AGENTS.md
+/docs/
+/.agents/
+/.codex/
