@@ -1,0 +1,12 @@
+apply_network_capabilities() {
+    setcap 'cap_net_admin,cap_net_raw=ep' '/usr/bin/@PACKAGE_NAME@'
+}
+
+post_install() {
+    apply_network_capabilities
+    printf 'Granted CAP_NET_ADMIN and CAP_NET_RAW to /usr/bin/@PACKAGE_NAME@.\n'
+}
+
+post_upgrade() {
+    apply_network_capabilities
+}
