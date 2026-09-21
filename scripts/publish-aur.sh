@@ -96,8 +96,8 @@ done
     exit 2
 }
 
-script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-project_dir="$(CDPATH= cd -- "${script_dir}/.." && pwd)"
+script_dir="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(CDPATH='' cd -- "${script_dir}/.." && pwd)"
 template_dir="${project_dir}/packaging/aur"
 
 [[ -f "${project_dir}/LICENSE" ]] || {
