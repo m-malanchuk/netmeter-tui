@@ -1,0 +1,49 @@
+# Maintainer: @MAINTAINER@
+pkgname=@PACKAGE_NAME@
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='Linux terminal network traffic monitor with per-interface and per-process views'
+arch=('x86_64')
+url='https://github.com/@REPOSITORY@'
+license=('@LICENSE@')
+depends=('glibc' 'libcap')
+makedepends=('go')
+install="${pkgname}.install"
+source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('@SHA256@')
+
+prepare() {
+    cd '@SOURCE_DIR@'
+    export GOPATH="${srcdir}"
+    go mod download -modcacherw
+    mkdir -p build
+}
+
+build() {
+    cd '@SOURCE_DIR@'
+    export CGO_CPPFLAGS="${CPPFLAGS}"
+    export CGO_CFLAGS="${CFLAGS}"
+    export CGO_CXXFLAGS="${CXXFLAGS}"
+    export CGO_LDFLAGS="${LDFLAGS}"
+    export GOPATH="${srcdir}"
+    export GOFLAGS='-buildmode=pie -trimpath -mod=readonly -modcacherw'
+    go build \
+        -buildvcs=false \
+        -ldflags "-linkmode external -extldflags \"${LDFLAGS}\" -X main.version=${pkgver}" \
+        -o "build/${pkgname}" \
+        ./cmd/netmeter-tui
+}
+
+check() {
+    cd '@SOURCE_DIR@'
+    export GOPATH="${srcdir}"
+    export GOFLAGS='-mod=readonly -modcacherw'
+    go test ./...
+}
+
+package() {
+    cd '@SOURCE_DIR@'
+    install -Dm755 "build/${pkgname}" "${pkgdir}/usr/bin/${pkgname}"
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
