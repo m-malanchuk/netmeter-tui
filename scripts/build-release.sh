@@ -22,8 +22,8 @@ if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
     exit 2
 fi
 
-script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-project_dir="$(CDPATH= cd -- "${script_dir}/.." && pwd)"
+script_dir="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(CDPATH='' cd -- "${script_dir}/.." && pwd)"
 output_dir="${project_dir}/dist/v${version}"
 temporary_dir="$(mktemp -d)"
 trap 'rm -rf -- "${temporary_dir}"' EXIT

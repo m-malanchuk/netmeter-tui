@@ -27,8 +27,8 @@ if (( $# == 2 )); then
     publish=true
 fi
 
-script_dir="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-project_dir="$(CDPATH= cd -- "${script_dir}/.." && pwd)"
+script_dir="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(CDPATH='' cd -- "${script_dir}/.." && pwd)"
 cd "${project_dir}"
 
 command -v gh >/dev/null || { printf 'error: GitHub CLI (gh) is required\n' >&2; exit 1; }
