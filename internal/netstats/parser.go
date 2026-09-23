@@ -11,6 +11,12 @@ import (
 
 const procNetDevFields = 16
 
+// procNetDevLineLimit is intentionally larger than a normal interface row.
+// Interface names are bounded by the kernel, but keeping an explicit scanner
+// limit prevents a malformed procfs source from silently returning a partial
+// result because bufio.Scanner's small default token limit was exceeded.
+const procNetDevLineLimit = 64 * 1024
+
 // Parse reads the contents of /proc/net/dev from r.
 //
 // Header and blank lines are ignored. Interface rows must contain the standard
@@ -18,6 +24,7 @@ const procNetDevFields = 16
 // retained.
 func Parse(r io.Reader) ([]Counters, error) {
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 1024), procNetDevLineLimit)
 	interfaces := make([]Counters, 0, 8)
 	seen := make(map[string]struct{})
 	lineNumber := 0
