@@ -40,12 +40,16 @@ type interfaceState struct {
 }
 
 type directionState struct {
-	metric       Metric
-	bytes        float64
-	elapsed      time.Duration
-	history      *History
-	displayTotal uint64
-	totalReset   bool
+	metric Metric
+	// generationBytes is exact byte accumulation for the current interface
+	// generation. It intentionally remains an integer until the rate/average
+	// presentation boundary so large counters do not lose precision in a
+	// float64 accumulator.
+	generationBytes uint64
+	elapsed         time.Duration
+	history         *History
+	displayTotal    uint64
+	totalReset      bool
 }
 
 // Monitor stores per-interface state. Its methods are intentionally not
@@ -263,7 +267,7 @@ func (state *directionState) reset(total uint64) {
 		state.displayTotal = total
 	}
 	state.metric = Metric{Total: state.displayTotal, SessionTotal: sessionTotal}
-	state.bytes = 0
+	state.generationBytes = 0
 	state.elapsed = 0
 	state.history.Clear()
 }
@@ -272,7 +276,7 @@ func (state *directionState) resetDerived() {
 	state.totalReset = true
 	state.displayTotal = 0
 	state.metric = Metric{}
-	state.bytes = 0
+	state.generationBytes = 0
 	state.elapsed = 0
 	state.history.Clear()
 }
@@ -285,9 +289,9 @@ func (state *directionState) addSample(delta uint64, elapsed time.Duration) {
 		state.metric.Maximum = rate
 	}
 	state.metric.SessionTotal = saturatingAdd(state.metric.SessionTotal, delta)
-	state.bytes += float64(delta)
-	state.elapsed += elapsed
-	state.metric.Average = state.bytes / state.elapsed.Seconds()
+	state.generationBytes = saturatingAdd(state.generationBytes, delta)
+	state.elapsed = saturatingDurationAdd(state.elapsed, elapsed)
+	state.metric.Average = float64(state.generationBytes) / state.elapsed.Seconds()
 	state.history.Add(rate)
 }
 
