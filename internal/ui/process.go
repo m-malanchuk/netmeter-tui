@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/m-malanchuk/netmeter-tui/internal/monitor"
@@ -202,7 +204,7 @@ func (a *App) drawMetricBar(x, y, width int, value, maximum float64, label strin
 		if column < fill {
 			cellStyle = filledStyle
 		}
-		a.screen.SetContent(x+column, y, ' ', nil, cellStyle)
+		setScreenContent(a.screen, x+column, y, ' ', nil, cellStyle)
 	}
 	label = truncate(label, width)
 	labelX := x + width - runeWidth(label)
@@ -212,7 +214,7 @@ func (a *App) drawMetricBar(x, y, width int, value, maximum float64, label strin
 		if column >= 0 && column < fill {
 			cellStyle = filledStyle.Foreground(a.theme.Background)
 		}
-		a.screen.SetContent(labelX+index, y, character, nil, cellStyle)
+		setScreenContent(a.screen, labelX+index, y, character, nil, cellStyle)
 	}
 }
 
@@ -224,28 +226,83 @@ func processPID(pid int) string {
 }
 
 func padRight(value string, width int) string {
-	if width <= runeWidth(value) {
+	if width <= textWidth(value) {
 		return value
 	}
-	return value + strings.Repeat(" ", width-runeWidth(value))
+	return value + strings.Repeat(" ", width-textWidth(value))
 }
 
 func truncate(value string, width int) string {
 	if width <= 0 {
 		return ""
 	}
-	runes := []rune(value)
-	if len(runes) <= width {
+	if textWidth(value) <= width {
 		return value
 	}
 	if width == 1 {
-		return string(runes[:1])
+		return "…"
 	}
-	return string(runes[:width-1]) + "…"
+	prefix, _ := splitText(value, width-1)
+	return prefix + "…"
 }
 
 func runeWidth(value string) int {
-	return len([]rune(value))
+	return textWidth(value)
+}
+
+// textWidth returns the number of terminal cells occupied by value. It keeps
+// the UI independent of an additional width package while handling combining
+// marks, common wide CJK ranges, emoji, and control characters conservatively.
+func textWidth(value string) int {
+	width := 0
+	for _, character := range []rune(value) {
+		width += runeDisplayWidth(character)
+	}
+	return width
+}
+
+func runeDisplayWidth(character rune) int {
+	if character == 0 || character == '\n' || character == '\r' || character == '\t' || unicode.Is(unicode.Mn, character) || unicode.Is(unicode.Me, character) || unicode.Is(unicode.Cf, character) {
+		return 0
+	}
+	if character >= 0x1f3fb && character <= 0x1f3ff {
+		return 0
+	}
+	if character < 0x20 || (character >= 0x7f && character < 0xa0) {
+		return 0
+	}
+	if isWideRune(character) {
+		return 2
+	}
+	return 1
+}
+
+func isWideRune(character rune) bool {
+	return character >= 0x1100 && (character <= 0x115f || character == 0x2329 || character == 0x232a || (character >= 0x2e80 && character <= 0xa4cf) || (character >= 0xac00 && character <= 0xd7a3) || (character >= 0xf900 && character <= 0xfaff) || (character >= 0xfe10 && character <= 0xfe19) || (character >= 0xfe30 && character <= 0xfe6f) || (character >= 0xff00 && character <= 0xff60) || (character >= 0xffe0 && character <= 0xffe6) || (character >= 0x1f300 && character <= 0x1faff))
+}
+
+// splitText returns a prefix no wider than maxWidth and the remaining text.
+// It never splits a rune and guarantees progress for positive maxWidth.
+func splitText(value string, maxWidth int) (string, string) {
+	if maxWidth <= 0 || value == "" {
+		return "", value
+	}
+	width := 0
+	index := 0
+	for index < len(value) {
+		character, size := utf8.DecodeRuneInString(value[index:])
+		characterWidth := runeDisplayWidth(character)
+		if width+characterWidth > maxWidth {
+			break
+		}
+		width += characterWidth
+		index += size
+	}
+	if index == 0 {
+		_, size := utf8.DecodeRuneInString(value)
+		index = size
+	}
+	return value[:index], value[index:]
 }
 
 func screenWidth(screen tcell.Screen) int {

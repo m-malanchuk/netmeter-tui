@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -83,6 +84,7 @@ func (a *App) SetInterfaces(interfaces []monitor.InterfaceStats) {
 	for _, stats := range interfaces {
 		a.names = append(a.names, stats.Name)
 	}
+	sort.Strings(a.names)
 	if a.fixed != "" {
 		a.selected = a.fixed
 		return
@@ -226,7 +228,9 @@ func (a *App) HandleEvent(event tcell.Event) Action {
 			return ActionThemePrevious
 		}
 	case *tcell.EventResize:
-		a.screen.Sync()
+		if a.screen != nil {
+			a.screen.Sync()
+		}
 		return ActionResize
 	case *tcell.EventInterrupt:
 		return ActionQuit
@@ -297,7 +301,7 @@ func packControlLines(items []string, width int) []string {
 		if current != "" {
 			candidate = current + "   " + item
 		}
-		if runeWidth(candidate) <= width {
+		if textWidth(candidate) <= width {
 			current = candidate
 			continue
 		}
@@ -305,10 +309,17 @@ func packControlLines(items []string, width int) []string {
 			lines = append(lines, current)
 			current = ""
 		}
-		for runeWidth(item) > width {
-			runes := []rune(item)
-			lines = append(lines, string(runes[:width]))
-			item = string(runes[width:])
+		for textWidth(item) > width {
+			prefix, rest := splitText(item, width)
+			if prefix == "" || textWidth(prefix) > width {
+				// A wide rune cannot fit into a one-cell line. Replace the
+				// item with a single-cell ellipsis so layout never emits an
+				// over-wide line.
+				item = truncate(item, width)
+				break
+			}
+			lines = append(lines, prefix)
+			item = rest
 		}
 		current = item
 	}
@@ -350,18 +361,35 @@ func contains(values []string, wanted string) bool {
 }
 
 func drawText(screen tcell.Screen, x, y int, style tcell.Style, text string) {
+	if screen == nil {
+		return
+	}
 	width, height := screen.Size()
 	if y < 0 || y >= height {
 		return
 	}
 	column := x
+	lastCell := -1
 	for _, character := range []rune(text) {
+		characterWidth := runeDisplayWidth(character)
+		if characterWidth == 0 {
+			if lastCell >= 0 && lastCell < width {
+				// tcell supports combining runes on the previously written cell.
+				cell, combining, styleAt, _ := screen.GetContent(lastCell, y)
+				if cell != 0 {
+					combining = append(combining, character)
+					screen.SetContent(lastCell, y, cell, combining, styleAt)
+				}
+			}
+			continue
+		}
 		if column >= width {
 			break
 		}
-		if column >= 0 {
-			screen.SetContent(column, y, character, nil, style)
+		if column >= 0 && column+characterWidth <= width {
+			setScreenContent(screen, column, y, character, nil, style)
+			lastCell = column
 		}
-		column++
+		column += characterWidth
 	}
 }

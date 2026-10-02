@@ -15,7 +15,7 @@ func GraphHeights(samples []float64, width, height int) ([]int, float64) {
 	heights := make([]int, width)
 	var maximum float64
 	for _, sample := range visible {
-		if sample > maximum && !math.IsNaN(sample) {
+		if sample > maximum && !math.IsNaN(sample) && !math.IsInf(sample, 0) {
 			maximum = sample
 		}
 	}
@@ -25,7 +25,7 @@ func GraphHeights(samples []float64, width, height int) ([]int, float64) {
 
 	start := width - len(visible)
 	for i, sample := range visible {
-		if sample <= 0 || math.IsNaN(sample) {
+		if sample <= 0 || math.IsNaN(sample) || math.IsInf(sample, 0) {
 			continue
 		}
 		barHeight := int(math.Round(sample / maximum * float64(height)))
