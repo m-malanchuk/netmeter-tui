@@ -16,6 +16,10 @@ type sampleResult struct {
 }
 
 func interfaceSampleLoop(ctx context.Context, collector InterfaceCollector, interval time.Duration, intervalChanges <-chan time.Duration, results chan<- sampleResult) {
+	if interval <= 0 {
+		close(results)
+		return
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	defer close(results)
@@ -24,7 +28,11 @@ func interfaceSampleLoop(ctx context.Context, collector InterfaceCollector, inte
 		select {
 		case <-ctx.Done():
 			return
-		case nextInterval := <-intervalChanges:
+		case nextInterval, ok := <-intervalChanges:
+			if !ok {
+				intervalChanges = nil
+				continue
+			}
 			if nextInterval <= 0 || nextInterval == interval {
 				continue
 			}
@@ -46,6 +54,10 @@ func interfaceSampleLoop(ctx context.Context, collector InterfaceCollector, inte
 const processCollectionTimeout = 10 * time.Second
 
 func processSampleLoop(ctx context.Context, collector ProcessCollector, interval time.Duration, intervalChanges <-chan time.Duration, modeChanges <-chan bool, refreshes <-chan struct{}, results chan<- sampleResult) {
+	if interval <= 0 {
+		close(results)
+		return
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	defer close(results)
@@ -67,19 +79,31 @@ func processSampleLoop(ctx context.Context, collector ProcessCollector, interval
 		select {
 		case <-ctx.Done():
 			return
-		case nextInterval := <-intervalChanges:
+		case nextInterval, ok := <-intervalChanges:
+			if !ok {
+				intervalChanges = nil
+				continue
+			}
 			if nextInterval <= 0 || nextInterval == interval {
 				continue
 			}
 			ticker.Reset(nextInterval)
 			interval = nextInterval
-		case nextEnabled := <-modeChanges:
+		case nextEnabled, ok := <-modeChanges:
+			if !ok {
+				modeChanges = nil
+				continue
+			}
 			wasEnabled := enabled
 			enabled = nextEnabled
 			if enabled && !wasEnabled && !collect() {
 				return
 			}
-		case <-refreshes:
+		case _, ok := <-refreshes:
+			if !ok {
+				refreshes = nil
+				continue
+			}
 			if enabled && !collect() {
 				return
 			}

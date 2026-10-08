@@ -14,30 +14,6 @@ import (
 	"github.com/m-malanchuk/netmeter-tui/internal/ui"
 )
 
-const minimumInterval = 50 * time.Millisecond
-
-var intervalPresets = [...]time.Duration{
-	50 * time.Millisecond,
-	100 * time.Millisecond,
-	250 * time.Millisecond,
-	500 * time.Millisecond,
-	1 * time.Second,
-	2 * time.Second,
-	5 * time.Second,
-	10 * time.Second,
-	30 * time.Second,
-}
-
-// Config contains runtime options for the application.
-type Config struct {
-	InterfaceName    string
-	Interval         time.Duration
-	ShowLoopback     bool
-	Theme            string
-	Collector        InterfaceCollector
-	ProcessCollector ProcessCollector
-}
-
 // Run starts the terminal application and returns when the user exits or the
 // context is canceled.
 func Run(ctx context.Context, config Config) error {
@@ -57,7 +33,13 @@ func Run(ctx context.Context, config Config) error {
 
 	initial, err := collector.Collect(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
+	}
+	if ctx.Err() != nil {
+		return nil
 	}
 	if config.InterfaceName != "" && !hasInterface(initial.Interfaces, config.InterfaceName) {
 		return fmt.Errorf("network interface %q was not found", config.InterfaceName)
@@ -71,7 +53,11 @@ func Run(ctx context.Context, config Config) error {
 	var processWarning string
 	processSampleReady := false
 
-	screen, err := initializeScreen()
+	screenFactory := config.ScreenFactory
+	if screenFactory == nil {
+		screenFactory = initializeScreen
+	}
+	screen, err := screenFactory()
 	if err != nil {
 		return err
 	}
@@ -95,8 +81,8 @@ func Run(ctx context.Context, config Config) error {
 	defer func() {
 		cancel()
 		close(eventQuit)
-		screen.Fini()
 		<-eventDone
+		screen.Fini()
 		<-interfaceDone
 		<-processDone
 	}()
