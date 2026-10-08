@@ -63,6 +63,47 @@ func TestProcessSampleLoopCollectsOnlyWhileEnabled(t *testing.T) {
 	}
 }
 
+func TestInterfaceSampleLoopStopsWhenIntervalCommandsClose(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	collector := &interfaceCollectorStub{}
+	intervalChanges := make(chan time.Duration)
+	close(intervalChanges)
+	results := make(chan sampleResult)
+	done := make(chan struct{})
+	go func() {
+		interfaceSampleLoop(ctx, collector, time.Hour, intervalChanges, results)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("interface worker stopped after control channel closed")
+	case <-time.After(20 * time.Millisecond):
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("interface worker did not stop after cancellation")
+	}
+}
+
+func TestWorkersCloseResultsForInvalidInterval(t *testing.T) {
+	ctx := context.Background()
+	interfaceResults := make(chan sampleResult)
+	interfaceSampleLoop(ctx, &interfaceCollectorStub{}, 0, nil, interfaceResults)
+	if _, ok := <-interfaceResults; ok {
+		t.Fatal("interface results channel remained open for invalid interval")
+	}
+
+	processResults := make(chan sampleResult)
+	processSampleLoop(ctx, &processCollectorStub{}, 0, nil, nil, nil, processResults)
+	if _, ok := <-processResults; ok {
+		t.Fatal("process results channel remained open for invalid interval")
+	}
+}
+
 func waitForChannelDrain[T any](t *testing.T, channel chan T) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
