@@ -2,6 +2,7 @@ package procstats
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -20,29 +21,32 @@ type socketCounters struct {
 }
 
 // Collector reads TCP and UDP socket observations and resolves their owning
-// processes. TCP counters come from inet_diag. UDP payload bytes are observed
-// with a best-effort AF_PACKET capture and are unavailable without the
-// CAP_NET_RAW capability; UDP socket rows remain visible in that case.
+// processes. TCP counters come from inet_diag. UDP bytes are accumulated by
+// eBPF when available, with best-effort AF_PACKET capture as a fallback.
 type Collector struct {
 	procRoot            string
 	previous            map[socketKey]socketCounters
 	mode                string
+	udpBPF              *udpBPFCounter
+	udpPrevious         map[udpBPFKey]udpBPFValue
+	udpOwners           map[uint64]udpBPFIdentity
+	udpBPFStale         map[udpBPFKey]uint8
 	udp                 *udpCapture
 	udpCaptureAttempted bool
-	udpCaptureWarning   string
+	udpCaptureWarning   collectorWarning
 	udpInterfaces       map[uint64]string
 }
 
 // NewCollector creates a collector backed by the host's procfs.
 func NewCollector() *Collector {
-	return &Collector{procRoot: defaultProcRoot, previous: make(map[socketKey]socketCounters), udpInterfaces: make(map[uint64]string)}
+	return &Collector{procRoot: defaultProcRoot, previous: make(map[socketKey]socketCounters), udpPrevious: make(map[udpBPFKey]udpBPFValue), udpOwners: make(map[uint64]udpBPFIdentity), udpBPFStale: make(map[udpBPFKey]uint8), udpInterfaces: make(map[uint64]string)}
 }
 
 // NewCollectorFromProcRoot creates a collector using a custom procfs root.
 // The netlink socket remains connected to the running Linux kernel; the custom
 // root is useful for deterministic ownership-mapping tests.
 func NewCollectorFromProcRoot(root string) *Collector {
-	return &Collector{procRoot: root, previous: make(map[socketKey]socketCounters), udpInterfaces: make(map[uint64]string)}
+	return &Collector{procRoot: root, previous: make(map[socketKey]socketCounters), udpPrevious: make(map[udpBPFKey]udpBPFValue), udpOwners: make(map[uint64]udpBPFIdentity), udpBPFStale: make(map[udpBPFKey]uint8), udpInterfaces: make(map[uint64]string)}
 }
 
 // Collect returns per-process TCP/UDP observations for the current instant.
@@ -55,12 +59,12 @@ func (c *Collector) Collect(ctx context.Context) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("read process sockets: %w", err)
 	}
 	resolver := newInterfaceResolver()
-	warnings := make([]string, 0, 3)
+	warnings := make([]collectorWarning, 0, 3)
 	sockets, mode, tcpWarning, err := collectTCPSockets(ctx, c.procRoot)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if tcpWarning != "" {
+	if tcpWarning.code != 0 {
 		warnings = append(warnings, tcpWarning)
 	}
 	if c.mode != "" && c.mode != mode {
@@ -75,7 +79,7 @@ func (c *Collector) Collect(ctx context.Context) (Snapshot, error) {
 		} else if ctx.Err() != nil {
 			return Snapshot{}, ctx.Err()
 		} else {
-			warnings = append(warnings, "process owner refresh unavailable: "+refreshErr.Error())
+			warnings = append(warnings, collectorWarning{code: warningOwnerRefresh, detail: refreshErr.Error()})
 		}
 	}
 
@@ -123,7 +127,7 @@ func (c *Collector) Collect(ctx context.Context) (Snapshot, error) {
 	c.previous = current
 
 	if udpErr != nil {
-		warnings = append(warnings, "UDP socket table unavailable: "+udpErr.Error())
+		warnings = append(warnings, collectorWarning{code: warningUDPSocketTable, detail: udpErr.Error()})
 	} else {
 		for _, socket := range udpSockets {
 			if err := ctx.Err(); err != nil {
@@ -142,12 +146,30 @@ func (c *Collector) Collect(ctx context.Context) (Snapshot, error) {
 		}
 
 		c.ensureUDPCapture()
-		if c.udp == nil {
+		if c.udpCaptureWarning.code != 0 {
 			warnings = append(warnings, c.udpCaptureWarning)
-		} else {
-			traffic, err := c.udp.collect(ctx, udpSockets, owners, resolver)
+		}
+		if c.udpBPF != nil || c.udp != nil {
+			var traffic map[processKey]udpTraffic
+			var warning collectorWarning
+			var err error
+			if c.udpBPF != nil {
+				traffic, warning, err = c.collectBPFUDP(ctx, udpSockets, owners, resolver)
+			} else {
+				traffic, err = c.udp.collect(ctx, udpSockets, owners, resolver)
+			}
+			if warning.code != 0 {
+				warnings = append(warnings, warning)
+			}
 			if err != nil {
-				warnings = append(warnings, "UDP packet capture error: "+err.Error())
+				if c.udpBPF != nil && ctx.Err() == nil {
+					c.fallbackToPacketCapture(err)
+				}
+				if c.udpCaptureWarning.code != 0 {
+					warnings = append(warnings, c.udpCaptureWarning)
+				} else {
+					warnings = append(warnings, collectorWarning{code: warningUDPAccounting, detail: "UDP byte accounting error: " + err.Error()})
+				}
 			} else {
 				for key, bytes := range traffic {
 					aggregate := aggregates[key]
@@ -171,6 +193,7 @@ func (c *Collector) Collect(ctx context.Context) (Snapshot, error) {
 				}
 			}
 		}
+		c.pruneUDPInterfaces(udpSockets)
 	}
 
 	result := make([]ProcessCounters, 0, len(aggregates))
@@ -240,12 +263,20 @@ func moveUnresolvedAggregate(aggregates map[processKey]*ProcessCounters, target 
 	return nil
 }
 
-func joinWarnings(warnings []string) string {
-	parts := warnings[:0]
+func joinWarnings(warnings []collectorWarning) string {
+	parts := make([]string, 0, len(warnings))
+	seen := make(map[string]struct{}, len(warnings))
 	for _, warning := range warnings {
-		if strings.TrimSpace(warning) != "" {
-			parts = append(parts, warning)
+		message := strings.TrimSpace(warning.message())
+		if message == "" {
+			continue
 		}
+		key := fmt.Sprintf("%d:%s", warning.code, message)
+		if _, found := seen[key]; found {
+			continue
+		}
+		seen[key] = struct{}{}
+		parts = append(parts, message)
 	}
 	return strings.Join(parts, "; ")
 }
@@ -255,24 +286,68 @@ func (c *Collector) ensureUDPCapture() {
 		return
 	}
 	c.udpCaptureAttempted = true
+	bpfCounter, bpfErr := newUDPBPFCounter()
+	if bpfErr == nil {
+		c.udpBPF = bpfCounter
+		return
+	}
+	bpfReason := bpfErr.Error()
+	if errors.Is(bpfErr, unix.EPERM) || errors.Is(bpfErr, unix.EACCES) {
+		bpfReason = "permission denied; CAP_BPF and CAP_NET_ADMIN are required"
+	}
 	capture, err := newUDPCapture()
 	c.udp = capture
 	if err != nil {
-		c.udpCaptureWarning = fmt.Sprintf("UDP byte counters unavailable (%v; raw packet capture usually requires CAP_NET_RAW); showing UDP socket counts only", err)
+		c.udpCaptureWarning = collectorWarning{code: warningUDPFallback, detail: fmt.Sprintf("UDP byte counters unavailable (eBPF: %s; packet capture: %v); showing UDP socket counts only", bpfReason, err)}
+	} else {
+		c.udpCaptureWarning = collectorWarning{code: warningUDPFallback, detail: fmt.Sprintf("UDP eBPF unavailable (%s); using best-effort packet capture", bpfReason)}
 	}
 }
 
-// Close releases the optional raw packet capture socket.
+func (c *Collector) fallbackToPacketCapture(cause error) {
+	if c.udpBPF != nil {
+		_ = c.udpBPF.close()
+		c.udpBPF = nil
+	}
+	capture, err := newUDPCapture()
+	if err != nil {
+		c.udp = nil
+		c.udpCaptureWarning = collectorWarning{code: warningUDPFallback, detail: fmt.Sprintf("UDP eBPF failed (%v); packet capture unavailable (%v); showing UDP socket counts only", cause, err)}
+		return
+	}
+	c.udp = capture
+	c.udpCaptureWarning = collectorWarning{code: warningUDPFallback, detail: fmt.Sprintf("UDP eBPF failed (%v); using best-effort packet capture", cause)}
+}
+
+func (c *Collector) pruneUDPInterfaces(sockets []udpSocket) {
+	active := make(map[uint64]struct{}, len(sockets))
+	for _, socket := range sockets {
+		active[socket.inode] = struct{}{}
+	}
+	for inode := range c.udpInterfaces {
+		if _, found := active[inode]; !found {
+			delete(c.udpInterfaces, inode)
+		}
+	}
+}
+
+// Close releases the optional UDP accounting resources.
 func (c *Collector) Close() error {
-	if c.udp == nil {
-		return nil
+	var first error
+	if c.udpBPF != nil {
+		first = c.udpBPF.close()
+		c.udpBPF = nil
 	}
-	err := c.udp.close()
-	c.udp = nil
-	return err
+	if c.udp != nil {
+		if err := c.udp.close(); err != nil && first == nil {
+			first = err
+		}
+		c.udp = nil
+	}
+	return first
 }
 
-func collectTCPSockets(ctx context.Context, root string) ([]diagSocket, string, string, error) {
+func collectTCPSockets(ctx context.Context, root string) ([]diagSocket, string, collectorWarning, error) {
 	result := make([]diagSocket, 0)
 	failedFamilies := make([]string, 0, 2)
 	diagFamilies := 0
@@ -293,11 +368,11 @@ func collectTCPSockets(ctx context.Context, root string) ([]diagSocket, string, 
 			continue
 		}
 		if ctx.Err() != nil {
-			return nil, "", "", ctx.Err()
+			return nil, "", collectorWarning{}, ctx.Err()
 		}
 		fallback, fallbackErr := readProcSocketFamily(ctx, root, item.family)
 		if fallbackErr != nil {
-			return nil, "", "", fmt.Errorf("query TCP %s sockets: %w (proc fallback: %v)", item.name, diagErr, fallbackErr)
+			return nil, "", collectorWarning{}, fmt.Errorf("query TCP %s sockets: %w (proc fallback: %v)", item.name, diagErr, fallbackErr)
 		}
 		result = append(result, fallback...)
 		procFamilies++
@@ -310,9 +385,9 @@ func collectTCPSockets(ctx context.Context, root string) ([]diagSocket, string, 
 	} else if diagFamilies > 0 {
 		mode = "mixed"
 	}
-	warning := ""
+	warning := collectorWarning{}
 	if procFamilies > 0 {
-		warning = "TCP byte counters unavailable (" + strings.Join(failedFamilies, "; ") + "); showing connection counts for affected families only"
+		warning = collectorWarning{code: warningTCPFallback, detail: strings.Join(failedFamilies, "; ")}
 	}
 	return result, mode, warning, nil
 }

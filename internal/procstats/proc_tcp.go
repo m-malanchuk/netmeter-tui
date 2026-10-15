@@ -14,6 +14,10 @@ import (
 )
 
 func readProcSocketFamily(ctx context.Context, root string, family uint8) ([]diagSocket, error) {
+	// This procfs reader is a connection-count fallback only. Unlike
+	// inet_diag, /proc/net/tcp{,6} does not expose reliable per-socket byte
+	// counters, so returned diagSocket values intentionally have zero counters
+	// and no cookie identity.
 	path := filepath.Join(root, "net", "tcp")
 	if family == unix.AF_INET6 {
 		path = filepath.Join(root, "net", "tcp6")

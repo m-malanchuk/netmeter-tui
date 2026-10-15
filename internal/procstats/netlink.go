@@ -16,6 +16,7 @@ const (
 	inetDiagMsgSize  = 72
 	inetDiagInfoAttr = 2
 	inetDiagNoCookie = ^uint32(0)
+	diagRequestSeq   = 1
 	tcpProtocol      = 6
 )
 
@@ -24,6 +25,10 @@ func (socket diagSocket) key() socketKey {
 }
 
 func dumpTCPFamily(ctx context.Context, family uint8) ([]diagSocket, error) {
+	return dumpSocketFamily(ctx, family, tcpProtocol)
+}
+
+func dumpSocketFamily(ctx context.Context, family uint8, protocol uint8) ([]diagSocket, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_DGRAM, unix.NETLINK_INET_DIAG)
 	if err != nil {
 		return nil, err
@@ -36,7 +41,7 @@ func dumpTCPFamily(ctx context.Context, family uint8) ([]diagSocket, error) {
 	if err := unix.Bind(fd, address); err != nil {
 		return nil, err
 	}
-	request := makeDiagRequest(family)
+	request := makeDiagRequestForProtocol(family, protocol)
 	if err := unix.Sendto(fd, request, 0, address); err != nil {
 		return nil, err
 	}
@@ -71,7 +76,7 @@ func dumpTCPFamily(ctx context.Context, family uint8) ([]diagSocket, error) {
 			}
 			return nil, err
 		}
-		messages, done, err := parseNetlinkMessages(buffer[:n], family)
+		messages, done, err := parseNetlinkMessagesForSequence(buffer[:n], family, diagRequestSeq)
 		if err != nil {
 			return nil, err
 		}
@@ -83,6 +88,10 @@ func dumpTCPFamily(ctx context.Context, family uint8) ([]diagSocket, error) {
 }
 
 func makeDiagRequest(family uint8) []byte {
+	return makeDiagRequestForProtocol(family, tcpProtocol)
+}
+
+func makeDiagRequestForProtocol(family uint8, protocol uint8) []byte {
 	messageLength := nlmsgHeaderSize + inetDiagReqSize
 	message := make([]byte, messageLength)
 	native := binary.NativeEndian
@@ -92,12 +101,14 @@ func makeDiagRequest(family uint8) []byte {
 	// bits in nlmsg_flags; mixing them makes the request silently wait forever.
 	native.PutUint16(message[4:6], unix.SOCK_DIAG_BY_FAMILY)
 	native.PutUint16(message[6:8], uint16(unix.NLM_F_REQUEST|unix.NLM_F_DUMP))
-	native.PutUint32(message[8:12], 1)
+	native.PutUint32(message[8:12], diagRequestSeq)
 	payload := message[nlmsgHeaderSize:]
 	payload[0] = family
-	payload[1] = tcpProtocol
+	payload[1] = protocol
 	// Request INET_DIAG_INFO, which contains Linux's tcp_info counters.
-	payload[2] = 1 << (inetDiagInfoAttr - 1)
+	if protocol == tcpProtocol {
+		payload[2] = 1 << (inetDiagInfoAttr - 1)
+	}
 	native.PutUint32(payload[4:8], ^uint32(0))
 	for offset := 48; offset < 56; offset += 4 {
 		native.PutUint32(payload[offset:offset+4], inetDiagNoCookie)
@@ -106,6 +117,15 @@ func makeDiagRequest(family uint8) []byte {
 }
 
 func parseNetlinkMessages(data []byte, family uint8) ([]diagSocket, bool, error) {
+	return parseNetlinkMessagesForSequence(data, family, 0)
+}
+
+// parseNetlinkMessagesForSequence decodes one or more inet_diag responses.
+// expectedSequence is zero for fixture parsing where the sender sequence is
+// intentionally unspecified. Kernel responses to dumpSocketFamily are checked
+// against the request sequence so unrelated netlink traffic cannot be mistaken
+// for socket observations.
+func parseNetlinkMessagesForSequence(data []byte, family uint8, expectedSequence uint32) ([]diagSocket, bool, error) {
 	result := make([]diagSocket, 0)
 	for len(data) >= nlmsgHeaderSize {
 		native := binary.NativeEndian
@@ -115,11 +135,23 @@ func parseNetlinkMessages(data []byte, family uint8) ([]diagSocket, bool, error)
 		}
 		typeID := native.Uint16(data[4:6])
 		flags := native.Uint16(data[6:8])
+		sequence := native.Uint32(data[8:12])
+		if expectedSequence != 0 && sequence != expectedSequence {
+			return nil, false, fmt.Errorf("unexpected netlink message sequence %d (want %d)", sequence, expectedSequence)
+		}
 		payload := data[nlmsgHeaderSize:length]
 		switch typeID {
 		case unix.NLMSG_DONE:
 			if flags&unix.NLM_F_DUMP_INTR != 0 {
 				return nil, false, fmt.Errorf("inet_diag dump interrupted by the kernel")
+			}
+			aligned := (length + 3) &^ 3
+			if aligned > len(data) {
+				return nil, false, fmt.Errorf("invalid aligned netlink message length %d", length)
+			}
+			data = data[aligned:]
+			if len(data) != 0 {
+				return nil, false, fmt.Errorf("netlink data follows NLMSG_DONE")
 			}
 			return result, true, nil
 		case unix.NLMSG_ERROR:
@@ -141,6 +173,9 @@ func parseNetlinkMessages(data []byte, family uint8) ([]diagSocket, bool, error)
 		}
 		data = data[aligned:]
 	}
+	if len(data) != 0 {
+		return nil, false, fmt.Errorf("truncated netlink message header: %d trailing bytes", len(data))
+	}
 	return result, false, nil
 }
 
@@ -153,8 +188,10 @@ func parseDiagSocket(payload []byte, family uint8) (diagSocket, bool) {
 		return diagSocket{}, false
 	}
 	socket := diagSocket{
-		ifIndex: int(native.Uint32(payload[40:44])),
-		inode:   uint64(native.Uint32(payload[68:72])),
+		ifIndex:    int(native.Uint32(payload[40:44])),
+		inode:      uint64(native.Uint32(payload[68:72])),
+		localPort:  binary.BigEndian.Uint16(payload[4:6]),
+		remotePort: binary.BigEndian.Uint16(payload[6:8]),
 		cookie: [2]uint32{
 			native.Uint32(payload[44:48]),
 			native.Uint32(payload[48:52]),
@@ -169,10 +206,13 @@ func parseDiagSocket(payload []byte, family uint8) (diagSocket, bool) {
 	socket.local = parseDiagAddress(payload[4+4:4+20], family)
 	socket.remote = parseDiagAddress(payload[4+20:4+36], family)
 	attributes := payload[inetDiagMsgSize:]
+	if len(attributes) != 0 && len(attributes) < 4 {
+		return diagSocket{}, false
+	}
 	for len(attributes) >= 4 {
 		length := int(native.Uint16(attributes[0:2]))
 		if length < 4 || length > len(attributes) {
-			break
+			return diagSocket{}, false
 		}
 		attributeType := native.Uint16(attributes[2:4]) & 0x3fff
 		if attributeType == inetDiagInfoAttr {
@@ -186,7 +226,7 @@ func parseDiagSocket(payload []byte, family uint8) (diagSocket, bool) {
 		}
 		aligned := (length + 3) &^ 3
 		if aligned > len(attributes) {
-			break
+			return diagSocket{}, false
 		}
 		attributes = attributes[aligned:]
 	}

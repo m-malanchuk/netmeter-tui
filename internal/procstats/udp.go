@@ -13,12 +13,13 @@ import (
 )
 
 const (
-	udpProtocol         = 17
-	etherTypeIPv4       = 0x0800
-	etherTypeIPv6       = 0x86dd
-	etherTypeVLAN       = 0x8100
-	etherTypeVLAN8021AD = 0x88a8
-	etherTypeVLAN9100   = 0x9100
+	udpProtocol          = 17
+	etherTypeIPv4        = 0x0800
+	etherTypeIPv6        = 0x86dd
+	etherTypeVLAN        = 0x8100
+	etherTypeVLAN8021AD  = 0x88a8
+	etherTypeVLAN9100    = 0x9100
+	udpCaptureBufferSize = 64 * 1024
 )
 
 type udpPacket struct {
@@ -109,7 +110,10 @@ func newUDPCapture() (*udpCapture, error) {
 		unix.Close(fd)
 		return nil, err
 	}
-	return &udpCapture{fd: fd, buffer: make([]byte, 64*1024)}, nil
+	// The capture is intentionally bounded. A full socket buffer causes packet
+	// loss, which is reported as best-effort behavior rather than blocking the
+	// interface monitor or growing memory without limit.
+	return &udpCapture{fd: fd, buffer: make([]byte, udpCaptureBufferSize)}, nil
 }
 
 func (capture *udpCapture) close() error {
@@ -122,6 +126,11 @@ func (capture *udpCapture) close() error {
 }
 
 func (capture *udpCapture) collect(ctx context.Context, sockets []udpSocket, owners map[uint64]processOwner, resolver interfaceResolver) (map[processKey]udpTraffic, error) {
+	// AF_PACKET is deliberately a best-effort fallback. It observes complete
+	// Ethernet/SLL frames available to this process, can miss packets when the
+	// socket buffer overflows, and cannot attribute fragmented or namespace-
+	// hidden traffic. The returned byte count is UDP payload length, not the
+	// interface/IP total used by the eBPF path.
 	traffic := make(map[processKey]udpTraffic)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -317,6 +326,13 @@ func parseIPv4UDPPacket(data []byte) (udpPacket, bool) {
 	if headerLength < 20 || len(data) < headerLength || data[9] != udpProtocol {
 		return udpPacket{}, false
 	}
+	// A fragmented IPv4 datagram cannot be attributed reliably from one
+	// capture frame: non-initial fragments do not carry the UDP header and the
+	// first fragment may not contain the complete payload. Count only complete,
+	// unfragmented datagrams in the fallback path.
+	if binary.BigEndian.Uint16(data[6:8])&0x3fff != 0 {
+		return udpPacket{}, false
+	}
 	totalLength := int(binary.BigEndian.Uint16(data[2:4]))
 	if totalLength < headerLength+8 || totalLength > len(data) {
 		return udpPacket{}, false
@@ -352,7 +368,7 @@ func parseIPv6UDPPacket(data []byte) (udpPacket, bool) {
 			nextHeader = data[offset]
 			offset += length
 		case 44:
-			if offset+8 > end || binary.BigEndian.Uint16(data[offset+2:offset+4])&0xfff8 != 0 {
+			if offset+8 > end || binary.BigEndian.Uint16(data[offset+2:offset+4])&0xfff9 != 0 {
 				return udpPacket{}, false
 			}
 			nextHeader = data[offset]
