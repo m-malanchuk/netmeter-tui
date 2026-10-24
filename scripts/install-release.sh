@@ -7,6 +7,7 @@ release_base_url="${NETMETER_TUI_RELEASE_BASE_URL:-}"
 version="latest"
 install_dir="/usr/local/bin"
 grant_capabilities=true
+install_capability_tools=false
 
 usage() {
     cat <<'EOF'
@@ -15,7 +16,9 @@ Usage: install-release.sh [options]
 Options:
   --version <version>       Install a tagged version instead of latest.
   --install-dir <path>      Install directory (default: /usr/local/bin).
-  --no-capabilities         Do not grant CAP_NET_ADMIN and CAP_NET_RAW.
+  --no-capabilities         Do not grant CAP_BPF, CAP_NET_ADMIN, and CAP_NET_RAW.
+  --install-capability-tools
+                            Allow the script to install a missing setcap package.
   -h, --help                Show this help.
 EOF
 }
@@ -34,6 +37,10 @@ while (( $# > 0 )); do
         ;;
     --no-capabilities)
         grant_capabilities=false
+        shift
+        ;;
+    --install-capability-tools)
+        install_capability_tools=true
         shift
         ;;
     -h|--help)
@@ -75,7 +82,6 @@ command -v sha256sum >/dev/null || { printf 'error: sha256sum is required\n' >&2
 command -v tar >/dev/null || { printf 'error: tar is required\n' >&2; exit 1; }
 
 temporary_dir="$(mktemp -d)"
-trap 'rm -rf -- "${temporary_dir}"' EXIT
 
 asset="netmeter-tui_linux_${architecture}.tar.gz"
 if [[ -n "${release_base_url}" ]]; then
@@ -102,8 +108,27 @@ curl --fail --location --silent --show-error \
         exit 1
     fi
     printf '%s\n' "${expected}" | sha256sum --check --strict -
+    while IFS= read -r entry; do
+        entry="${entry#./}"
+        [[ -z "${entry}" ]] && continue
+        case "${entry}" in
+        /*|..|../*|*/../*)
+            printf 'error: unsafe archive path %q\n' "${entry}" >&2
+            exit 1
+            ;;
+        esac
+    done < <(tar -tzf "${asset}")
+    while IFS= read -r listing; do
+        case "${listing:0:1}" in
+        -|d) ;;
+        *)
+            printf 'error: archive contains a non-regular entry: %s\n' "${listing}" >&2
+            exit 1
+            ;;
+        esac
+    done < <(tar -tvzf "${asset}")
     mkdir extracted
-    tar -xzf "${asset}" -C extracted
+    tar --extract --no-same-owner --no-same-permissions --file "${asset}" --directory extracted
 )
 
 binary="${temporary_dir}/extracted/netmeter-tui"
@@ -117,6 +142,36 @@ run_as_root() {
     command -v sudo >/dev/null || { printf 'error: sudo is required for system installation\n' >&2; exit 1; }
     sudo "$@"
 }
+
+target_path="${install_dir}/netmeter-tui"
+previous_path="${temporary_dir}/previous-netmeter-tui"
+had_previous=false
+installation_changed=false
+
+cleanup() {
+    local status=$?
+    if (( status != 0 )) && [[ "${installation_changed}" == true ]]; then
+        if [[ "${had_previous}" == true ]]; then
+            if ! run_as_root install -m 0755 "${previous_path}" "${target_path}"; then
+                printf 'warning: failed to restore the previous installation at %s\n' "${target_path}" >&2
+            fi
+        elif ! run_as_root rm -f -- "${target_path}"; then
+            printf 'warning: failed to remove the incomplete installation at %s\n' "${target_path}" >&2
+        fi
+    fi
+    rm -rf -- "${temporary_dir}"
+    exit "${status}"
+}
+trap cleanup EXIT
+
+if [[ -L "${target_path}" ]]; then
+    printf 'error: refusing to replace symlink at %s\n' "${target_path}" >&2
+    exit 1
+fi
+if [[ -e "${target_path}" ]]; then
+    run_as_root cp -a -- "${target_path}" "${previous_path}"
+    had_previous=true
+fi
 
 install_capability_tools() {
     printf 'setcap is not installed; installing the platform capability tools...\n'
@@ -138,21 +193,37 @@ install_capability_tools() {
 }
 
 if [[ -d "${install_dir}" && -w "${install_dir}" ]]; then
+    installation_changed=true
     install -m 0755 "${binary}" "${install_dir}/netmeter-tui"
 elif [[ ! -e "${install_dir}" && -w "$(dirname -- "${install_dir}")" ]]; then
+    installation_changed=true
     install -d -m 0755 "${install_dir}"
     install -m 0755 "${binary}" "${install_dir}/netmeter-tui"
 else
+    installation_changed=true
     run_as_root install -d -m 0755 "${install_dir}"
     run_as_root install -m 0755 "${binary}" "${install_dir}/netmeter-tui"
 fi
 
 if [[ "${grant_capabilities}" == true ]]; then
-    command -v setcap >/dev/null || install_capability_tools
-    run_as_root setcap 'cap_net_admin,cap_net_raw=ep' "${install_dir}/netmeter-tui"
+    if ! command -v setcap >/dev/null; then
+        if [[ "${install_capability_tools}" == true ]]; then
+            install_capability_tools
+        else
+            printf 'setcap is unavailable; leaving capabilities unchanged. Re-run with --install-capability-tools or --no-capabilities.\n' >&2
+            grant_capabilities=false
+        fi
+    fi
 fi
 
-printf 'Installed %s\n' "${install_dir}/netmeter-tui"
 if [[ "${grant_capabilities}" == true ]]; then
-    printf 'Granted CAP_NET_ADMIN and CAP_NET_RAW for process traffic accounting.\n'
+    if run_as_root setcap 'cap_bpf,cap_net_admin,cap_net_raw=ep' "${target_path}"; then
+        printf 'Granted CAP_BPF, CAP_NET_ADMIN, and CAP_NET_RAW for process traffic accounting.\n'
+    elif run_as_root setcap 'cap_net_admin,cap_net_raw=ep' "${install_dir}/netmeter-tui"; then
+        printf 'CAP_BPF is unavailable; falling back to packet-based UDP accounting.\n' >&2
+    else
+        printf 'Could not grant network capabilities; interface monitoring remains available.\n' >&2
+    fi
 fi
+
+printf 'Installed %s\n' "${target_path}"
