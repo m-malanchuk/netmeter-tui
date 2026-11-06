@@ -3,8 +3,9 @@ module github.com/m-malanchuk/netmeter-tui
 go 1.27
 
 require (
+	github.com/cilium/ebpf v0.22.0
 	github.com/gdamore/tcell/v2 v2.13.10
-	golang.org/x/sys v0.38.0
+	golang.org/x/sys v0.43.0
 )
 
 require (
