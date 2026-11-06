@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,18 +16,15 @@ import (
 var version = "dev"
 
 func main() {
-	var config app.Config
-	showVersion := flag.Bool("version", false, "print version and exit")
-	flag.StringVar(&config.InterfaceName, "i", "", "network interface to monitor")
-	flag.DurationVar(&config.Interval, "interval", 500*time.Millisecond, "sampling interval (for example, 500ms or 2s)")
-	flag.BoolVar(&config.ShowLoopback, "show-loopback", false, "include the loopback interface lo")
-	flag.StringVar(&config.Theme, "theme", "adwaita-dark", "color theme: adwaita-dark, gruvbox-dark, nord, dracula, tokyo-night, or solarized-dark")
-	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "Usage: %s [options]\n\n", os.Args[0])
-		flag.PrintDefaults()
+	config, showVersion, err := parseArgs(os.Args[1:], os.Args[0], os.Stderr)
+	if err != nil {
+		if err == flag.ErrHelp {
+			return
+		}
+		fmt.Fprintln(os.Stderr, "netmeter-tui:", err)
+		os.Exit(2)
 	}
-	flag.Parse()
-	if *showVersion {
+	if showVersion {
 		fmt.Printf("netmeter-tui %s\n", version)
 		return
 	}
@@ -37,4 +35,24 @@ func main() {
 		fmt.Fprintln(os.Stderr, "netmeter-tui:", err)
 		os.Exit(1)
 	}
+}
+
+func parseArgs(args []string, commandName string, output io.Writer) (app.Config, bool, error) {
+	config := app.Config{Interval: 500 * time.Millisecond, Theme: "adwaita-dark"}
+	flags := flag.NewFlagSet(commandName, flag.ContinueOnError)
+	flags.SetOutput(output)
+	showVersion := false
+	flags.BoolVar(&showVersion, "version", false, "print version and exit")
+	flags.StringVar(&config.InterfaceName, "i", "", "network interface to monitor")
+	flags.DurationVar(&config.Interval, "interval", config.Interval, "sampling interval (for example, 500ms or 2s)")
+	flags.BoolVar(&config.ShowLoopback, "show-loopback", false, "include the loopback interface lo")
+	flags.StringVar(&config.Theme, "theme", config.Theme, "color theme: adwaita-dark, gruvbox-dark, nord, dracula, tokyo-night, or solarized-dark")
+	flags.Usage = func() {
+		fmt.Fprintf(output, "Usage: %s [options]\n\n", commandName)
+		flags.PrintDefaults()
+	}
+	if err := flags.Parse(args); err != nil {
+		return app.Config{}, false, err
+	}
+	return config, showVersion, nil
 }

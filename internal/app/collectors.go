@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 
+	"github.com/gdamore/tcell/v2"
 	"github.com/m-malanchuk/netmeter-tui/internal/netstats"
 	"github.com/m-malanchuk/netmeter-tui/internal/procstats"
 )
@@ -19,3 +20,8 @@ type ProcessCollector interface {
 	Collect(context.Context) (procstats.Snapshot, error)
 	Close() error
 }
+
+// ScreenFactory creates and initializes the terminal screen used by Run.
+// Keeping this boundary injectable lets lifecycle tests use a simulation screen
+// without changing the production terminal setup path.
+type ScreenFactory func() (tcell.Screen, error)

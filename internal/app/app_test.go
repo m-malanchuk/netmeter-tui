@@ -3,8 +3,13 @@ package app
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gdamore/tcell/v2"
+	"github.com/m-malanchuk/netmeter-tui/internal/netstats"
+	"github.com/m-malanchuk/netmeter-tui/internal/procstats"
 )
 
 func TestAdjustIntervalWalksPresets(t *testing.T) {
@@ -27,6 +32,15 @@ func TestAdjustIntervalWalksPresets(t *testing.T) {
 				t.Fatalf("adjustInterval(%s, %d) = %s, want %s", test.current, test.direction, got, test.want)
 			}
 		})
+	}
+}
+
+func TestDefaultIntervalIsWithinSupportedRange(t *testing.T) {
+	if intervalPresets[0] != minimumInterval {
+		t.Fatalf("first interval preset = %s, want minimum %s", intervalPresets[0], minimumInterval)
+	}
+	if intervalPresets[len(intervalPresets)-1] <= intervalPresets[0] {
+		t.Fatalf("interval presets are not increasing: %v", intervalPresets)
 	}
 }
 
@@ -53,4 +67,124 @@ func TestPublishLatestReplacesQueuedValue(t *testing.T) {
 	if got := <-values; got != 2 {
 		t.Fatalf("queued value = %d, want 2", got)
 	}
+}
+
+type interfaceCollectorStub struct {
+	snapshot netstats.Snapshot
+	calls    atomic.Int32
+}
+
+func (collector *interfaceCollectorStub) Collect(context.Context) (netstats.Snapshot, error) {
+	collector.calls.Add(1)
+	return collector.snapshot, nil
+}
+
+type closeTrackingProcessCollector struct {
+	closed atomic.Bool
+}
+
+func (*closeTrackingProcessCollector) Collect(context.Context) (procstats.Snapshot, error) {
+	return procstats.Snapshot{At: time.Unix(1, 0)}, nil
+}
+
+func (collector *closeTrackingProcessCollector) Close() error {
+	collector.closed.Store(true)
+	return nil
+}
+
+func TestRunReturnsCleanlyWhenContextIsAlreadyCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	collector := &cancelAwareInterfaceCollectorStub{}
+
+	err := Run(ctx, Config{
+		Interval:  500 * time.Millisecond,
+		Theme:     "adwaita-dark",
+		Collector: collector,
+		ScreenFactory: func() (tcell.Screen, error) {
+			t.Fatal("screen initialized after context cancellation")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error = %v, want nil", err)
+	}
+	if got := collector.calls.Load(); got != 1 {
+		t.Fatalf("initial collection calls = %d, want 1", got)
+	}
+}
+
+type contextIgnoringInterfaceCollectorStub struct{}
+
+func (contextIgnoringInterfaceCollectorStub) Collect(context.Context) (netstats.Snapshot, error) {
+	return netstats.Snapshot{At: time.Unix(1, 0)}, nil
+}
+
+func TestRunSkipsScreenAfterInitialCollectionWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := Run(ctx, Config{
+		Interval:  500 * time.Millisecond,
+		Theme:     "adwaita-dark",
+		Collector: contextIgnoringInterfaceCollectorStub{},
+		ScreenFactory: func() (tcell.Screen, error) {
+			t.Fatal("screen initialized after initial collection observed cancellation")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run returned error = %v, want nil", err)
+	}
+}
+
+func TestRunCleansUpScreenWorkersAndProcessCollector(t *testing.T) {
+	screen := tcell.NewSimulationScreen("")
+	processCollector := &closeTrackingProcessCollector{}
+	collector := &interfaceCollectorStub{snapshot: netstats.Snapshot{
+		At:         time.Unix(1, 0),
+		Interfaces: []netstats.Counters{{Name: "eth0"}},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	ready := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Config{
+			Interval:         50 * time.Millisecond,
+			Theme:            "adwaita-dark",
+			Collector:        collector,
+			ProcessCollector: processCollector,
+			ScreenFactory: func() (tcell.Screen, error) {
+				if err := screen.Init(); err != nil {
+					return nil, err
+				}
+				close(ready)
+				return screen, nil
+			},
+		})
+	}()
+	select {
+	case <-ready:
+	case <-time.After(time.Second):
+		t.Fatal("screen was not initialized")
+	}
+	cancel()
+	err := <-done
+	if err != nil {
+		t.Fatalf("Run returned error = %v, want nil", err)
+	}
+	if !processCollector.closed.Load() {
+		t.Fatal("process collector was not closed")
+	}
+}
+
+type cancelAwareInterfaceCollectorStub struct {
+	calls atomic.Int32
+}
+
+func (collector *cancelAwareInterfaceCollectorStub) Collect(ctx context.Context) (netstats.Snapshot, error) {
+	collector.calls.Add(1)
+	if err := ctx.Err(); err != nil {
+		return netstats.Snapshot{}, err
+	}
+	return netstats.Snapshot{}, nil
 }
