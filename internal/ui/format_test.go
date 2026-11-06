@@ -1,6 +1,9 @@
 package ui
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestFormatRateUsesBinaryUnits(t *testing.T) {
 	tests := []struct {
@@ -38,5 +41,35 @@ func TestFormatBytes(t *testing.T) {
 		if got := FormatBytes(test.value); got != test.want {
 			t.Errorf("FormatBytes(%d) = %q, want %q", test.value, got, test.want)
 		}
+	}
+}
+
+func TestFormatRateRejectsInvalidValues(t *testing.T) {
+	for _, value := range []float64{-1, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if got := FormatRate(value); got != "0 B/s" {
+			t.Errorf("FormatRate(%v) = %q, want zero", value, got)
+		}
+	}
+}
+
+func TestFormatBytesKeepsExactUnitSelectionAtLargeValues(t *testing.T) {
+	tests := []struct {
+		value uint64
+		want  string
+	}{
+		{value: uint64(1) << 50, want: "1.00 PiB"},
+		{value: uint64(1) << 60, want: "1.00 EiB"},
+		{value: ^uint64(0), want: "16.00 EiB"},
+	}
+	for _, test := range tests {
+		if got := FormatBytes(test.value); got != test.want {
+			t.Errorf("FormatBytes(%d) = %q, want %q", test.value, got, test.want)
+		}
+	}
+}
+
+func TestFormatBytesPromotesRoundedUnitBoundary(t *testing.T) {
+	if got := FormatBytes((uint64(1) << 20) - 1); got != "1.00 MiB" {
+		t.Fatalf("FormatBytes(2^20-1) = %q, want promoted MiB", got)
 	}
 }

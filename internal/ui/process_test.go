@@ -54,6 +54,59 @@ func TestPackControlLinesFitsWidthAndKeepsItems(t *testing.T) {
 	}
 }
 
+func TestPackControlLinesNeverExceedsOneCell(t *testing.T) {
+	lines := packControlLines([]string{"界", "q"}, 1)
+	for _, line := range lines {
+		if textWidth(line) > 1 {
+			t.Fatalf("line %q has width %d", line, textWidth(line))
+		}
+	}
+}
+
+func TestTextWidthHandlesWideAndCombiningRunes(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{name: "ascii", value: "abc", want: 3},
+		{name: "cjk", value: "界面", want: 4},
+		{name: "combining", value: "e\u0301", want: 1},
+		{name: "emoji", value: "📈", want: 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := textWidth(test.value); got != test.want {
+				t.Fatalf("textWidth(%q) = %d, want %d", test.value, got, test.want)
+			}
+		})
+	}
+}
+
+func TestTruncateUsesTerminalCells(t *testing.T) {
+	if got := truncate("界面状态", 5); got != "界面…" {
+		t.Fatalf("truncate wide text = %q, want %q", got, "界面…")
+	}
+	if got := padRight("界", 4); got != "界  " {
+		t.Fatalf("padRight wide text = %q, want two trailing spaces", got)
+	}
+}
+
+func TestSetInterfacesSortsNames(t *testing.T) {
+	view := &App{}
+	view.SetInterfaces([]monitor.InterfaceStats{{Name: "wlan0"}, {Name: "eth0"}, {Name: "lo"}})
+	if got := view.names; len(got) != 3 || got[0] != "eth0" || got[1] != "lo" || got[2] != "wlan0" {
+		t.Fatalf("interface names = %v, want sorted names", got)
+	}
+}
+
+func TestResizeEventWithoutScreenIsSafe(t *testing.T) {
+	view := &App{}
+	if action := view.HandleEvent(tcell.NewEventResize(80, 24)); action != ActionResize {
+		t.Fatalf("resize action = %v, want %v", action, ActionResize)
+	}
+}
+
 func TestThemeNamesAreAvailable(t *testing.T) {
 	for _, name := range []string{"adwaita-dark", "gruvbox-dark", "nord", "dracula", "tokyo-night", "solarized-dark"} {
 		if !HasTheme(name) {
@@ -121,6 +174,34 @@ func TestRenderPaintsWholeCanvasBackground(t *testing.T) {
 		if background != view.theme.Background {
 			t.Fatalf("cell %d background = %v, want %v", index, background, view.theme.Background)
 		}
+	}
+}
+
+func TestRenderHandlesNilAndTinyScreens(t *testing.T) {
+	view := New(nil, 500*time.Millisecond, "", "nord")
+	view.Render(monitor.InterfaceStats{}, false, "")
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(1, 1)
+	view = New(screen, 500*time.Millisecond, "", "nord")
+	view.Render(monitor.InterfaceStats{}, false, "")
+}
+
+func TestDrawTextClipsWideRuneAtRightEdge(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	defer screen.Fini()
+	screen.SetSize(1, 1)
+	drawText(screen, 0, 0, tcell.StyleDefault, "界")
+	cells, _, _ := screen.GetContents()
+	if len(cells) != 1 || len(cells[0].Runes) != 0 {
+		t.Fatalf("clipped wide rune left cell contents: %+v", cells)
 	}
 }
 

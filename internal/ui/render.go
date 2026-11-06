@@ -7,9 +7,42 @@ import (
 	"github.com/m-malanchuk/netmeter-tui/internal/monitor"
 )
 
+type renderLayout struct {
+	width         int
+	height        int
+	controlLines  []string
+	contentTop    int
+	footerY       int
+	contentHeight int
+	sectionHeight int
+}
+
+func controlHints(processMode bool) []string {
+	if processMode {
+		return []string{"↑/↓ row", "←/→ or Tab sort", "Enter order", ",/. interface", "/ filter", "p/F2 dashboard", "+/- interval", "Space pause", "r reset", "t/T theme", "q quit"}
+	}
+	return []string{"←/↑ previous", "→/↓ next", "p/F2 processes", "+/- interval", "Space pause", "r reset", "t/T theme", "q quit"}
+}
+
+func calculateLayout(width, height int, processMode bool) renderLayout {
+	layout := renderLayout{width: width, height: height}
+	if width <= 0 || height <= 0 {
+		return layout
+	}
+	layout.controlLines = packControlLines(controlHints(processMode), width)
+	layout.contentTop = 2 + len(layout.controlLines)
+	layout.footerY = height - 1
+	layout.contentHeight = layout.footerY - layout.contentTop
+	layout.sectionHeight = layout.contentHeight / 2
+	return layout
+}
+
 // Render draws the current view. selectedOK is false when the requested
 // interface is temporarily absent.
 func (a *App) Render(selected monitor.InterfaceStats, selectedOK bool, status string) {
+	if a == nil || a.screen == nil {
+		return
+	}
 	a.screen.SetStyle(a.defaultStyle)
 	// tcell's Clear always uses StyleDefault, regardless of SetStyle. Fill the
 	// complete canvas explicitly so blank cells use the active theme as well.
@@ -20,6 +53,7 @@ func (a *App) Render(selected monitor.InterfaceStats, selectedOK bool, status st
 		return
 	}
 
+	layout := calculateLayout(width, height, a.processMode)
 	header := fmt.Sprintf("NetMeter TUI  mode: Dashboard (p/F2: processes)  interface: %s  interval: %s  theme: %s", displayName(a.selected), a.interval, a.theme.Name)
 	if a.processMode {
 		header = fmt.Sprintf("NetMeter TUI  mode: Processes (p/F2: dashboard)  interface: %s  sort: %s %s  interval: %s  theme: %s", displayName(a.selected), a.processSortLabel(), a.sortDirection(), a.interval, a.theme.Name)
@@ -28,39 +62,30 @@ func (a *App) Render(selected monitor.InterfaceStats, selectedOK bool, status st
 		header += "  [PAUSED]"
 	}
 	drawText(a.screen, 0, 0, a.headerStyle, header)
-	controls := []string{"←/↑ previous", "→/↓ next", "p/F2 processes", "+/- interval", "Space pause", "r reset", "t/T theme", "q quit"}
-	if a.processMode {
-		controls = []string{"↑/↓ row", "←/→ or Tab sort", "Enter order", ",/. interface", "/ filter", "p/F2 dashboard", "+/- interval", "Space pause", "r reset", "t/T theme", "q quit"}
-	}
-	controlLines := packControlLines(controls, width)
-	for index, line := range controlLines {
+	for index, line := range layout.controlLines {
 		drawText(a.screen, 0, 1+index, a.mutedStyle, line)
 	}
-	if 1+len(controlLines) >= height {
+	if 1+len(layout.controlLines) >= height {
 		a.screen.Show()
 		return
 	}
 
-	contentTop := 2 + len(controlLines)
-	footerY := height - 1
-	if contentTop >= footerY {
-		drawText(a.screen, 0, footerY, a.statusStyle, "Terminal too small; resize to continue")
+	if layout.contentTop >= layout.footerY {
+		drawText(a.screen, 0, layout.footerY, a.statusStyle, "Terminal too small; resize to continue")
 		a.screen.Show()
 		return
 	}
-	contentHeight := footerY - contentTop
-	sectionHeight := contentHeight / 2
-	if sectionHeight < 2 {
-		drawText(a.screen, 0, contentTop, a.mutedStyle, "Terminal too small; resize to continue")
+	if layout.sectionHeight < 2 {
+		drawText(a.screen, 0, layout.contentTop, a.mutedStyle, "Terminal too small; resize to continue")
 	} else if a.selected == "" {
-		drawText(a.screen, 0, contentTop, a.mutedStyle, "No network interfaces available; waiting for discovery")
+		drawText(a.screen, 0, layout.contentTop, a.mutedStyle, "No network interfaces available; waiting for discovery")
 	} else if !selectedOK || !selected.Available {
-		drawText(a.screen, 0, contentTop, a.mutedStyle, fmt.Sprintf("Interface %s is unavailable; waiting for it to return", displayName(a.selected)))
+		drawText(a.screen, 0, layout.contentTop, a.mutedStyle, fmt.Sprintf("Interface %s is unavailable; waiting for it to return", displayName(a.selected)))
 	} else if a.processMode {
-		a.drawProcesses(contentTop, contentHeight, selectedOK)
+		a.drawProcesses(layout.contentTop, layout.contentHeight, selectedOK)
 	} else {
-		a.drawSection(contentTop, sectionHeight, "Incoming / RX", selected.RX, selected.RXHistory, a.incomingStyle)
-		a.drawSection(contentTop+sectionHeight, contentHeight-sectionHeight, "Outgoing / TX", selected.TX, selected.TXHistory, a.outgoingStyle)
+		a.drawSection(layout.contentTop, layout.sectionHeight, "Incoming / RX", selected.RX, selected.RXHistory, a.incomingStyle)
+		a.drawSection(layout.contentTop+layout.sectionHeight, layout.contentHeight-layout.sectionHeight, "Outgoing / TX", selected.TX, selected.TXHistory, a.outgoingStyle)
 	}
 
 	if status == "" {
@@ -70,7 +95,7 @@ func (a *App) Render(selected monitor.InterfaceStats, selectedOK bool, status st
 			status = "Ready"
 		}
 	}
-	drawText(a.screen, 0, footerY, a.statusStyle, status)
+	drawText(a.screen, 0, layout.footerY, a.statusStyle, status)
 	a.screen.Show()
 }
 
@@ -243,7 +268,21 @@ func (a *App) drawSection(y, height int, title string, metric monitor.Metric, hi
 				character = '█'
 				barStyle = style
 			}
-			a.screen.SetContent(column, y+3+row, character, nil, barStyle)
+			setScreenContent(a.screen, column, y+3+row, character, nil, barStyle)
 		}
 	}
+}
+
+// setScreenContent clips a single terminal-cell write to the current screen.
+// Keeping this boundary here makes graph drawing safe even when a terminal is
+// resized between layout calculation and rendering.
+func setScreenContent(screen tcell.Screen, x, y int, main rune, combining []rune, style tcell.Style) {
+	if screen == nil {
+		return
+	}
+	width, height := screen.Size()
+	if x < 0 || x >= width || y < 0 || y >= height {
+		return
+	}
+	screen.SetContent(x, y, main, combining, style)
 }
