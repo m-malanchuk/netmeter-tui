@@ -90,11 +90,11 @@ func (c *Collector) Collect(ctx context.Context) (Snapshot, error) {
 		if err := ctx.Err(); err != nil {
 			return Snapshot{}, err
 		}
+		interfaceName := resolver.resolve(socket)
 		owner, found := owners[socket.inode]
 		if !found {
-			owner = processOwner{name: "unknown"}
+			owner = classifyUnownedSocket(socket.uid, socket.uidKnown, socket.local, socket.remote, socket.localPort, resolver)
 		}
-		interfaceName := resolver.resolve(socket)
 		aggregate := ensureAggregate(aggregates, owner, interfaceName)
 		aggregate.Connections++
 	}
@@ -115,11 +115,11 @@ func (c *Collector) Collect(ctx context.Context) (Snapshot, error) {
 			}
 		}
 
+		interfaceName := resolver.resolve(socket)
 		owner, found := owners[socket.inode]
 		if !found {
-			owner = processOwner{name: "unknown"}
+			owner = classifyUnownedSocket(socket.uid, socket.uidKnown, socket.local, socket.remote, socket.localPort, resolver)
 		}
-		interfaceName := resolver.resolve(socket)
 		aggregate := ensureAggregate(aggregates, owner, interfaceName)
 		aggregate.RXBytes = saturatingAdd(aggregate.RXBytes, rxDelta)
 		aggregate.TXBytes = saturatingAdd(aggregate.TXBytes, txDelta)
@@ -133,13 +133,13 @@ func (c *Collector) Collect(ctx context.Context) (Snapshot, error) {
 			if err := ctx.Err(); err != nil {
 				return Snapshot{}, err
 			}
-			owner, found := owners[socket.inode]
-			if !found {
-				owner = processOwner{name: "unknown"}
-			}
 			interfaceName := resolver.resolveUDP(socket)
 			if interfaceName == "" {
 				interfaceName = c.udpInterfaces[socket.inode]
+			}
+			owner, found := owners[socket.inode]
+			if !found {
+				owner = classifyUnownedSocket(socket.uid, socket.uidKnown, socket.local, socket.remote, socket.localPort, resolver)
 			}
 			aggregate := ensureAggregate(aggregates, owner, interfaceName)
 			aggregate.Connections++

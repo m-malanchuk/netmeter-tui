@@ -192,6 +192,8 @@ func parseDiagSocket(payload []byte, family uint8) (diagSocket, bool) {
 		inode:      uint64(native.Uint32(payload[68:72])),
 		localPort:  binary.BigEndian.Uint16(payload[4:6]),
 		remotePort: binary.BigEndian.Uint16(payload[6:8]),
+		uid:        native.Uint32(payload[64:68]),
+		uidKnown:   true,
 		cookie: [2]uint32{
 			native.Uint32(payload[44:48]),
 			native.Uint32(payload[48:52]),

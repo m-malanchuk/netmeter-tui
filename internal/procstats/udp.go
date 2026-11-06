@@ -89,10 +89,15 @@ func parseProcUDPSocketLine(line string, family uint8) (udpSocket, bool) {
 	if err != nil || inode == 0 {
 		return udpSocket{}, false
 	}
+	uid, err := strconv.ParseUint(fields[7], 10, 32)
+	if err != nil {
+		return udpSocket{}, false
+	}
 	return udpSocket{
 		inode: inode, family: family,
 		local: local, remote: remote,
 		localPort: localPort, remotePort: remotePort,
+		uid: uint32(uid), uidKnown: true,
 	}, true
 }
 
@@ -164,13 +169,13 @@ func (capture *udpCapture) collect(ctx context.Context, sockets []udpSocket, own
 		if !ok {
 			continue
 		}
-		owner, found := owners[socket.inode]
-		if !found {
-			owner = processOwner{name: "unknown"}
-		}
 		interfaceName := resolver.resolveValues(ifIndex, packet.source, packet.destination)
 		if interfaceName == "" {
 			interfaceName = resolver.resolveUDP(socket)
+		}
+		owner, found := owners[socket.inode]
+		if !found {
+			owner = classifyUnownedSocket(socket.uid, socket.uidKnown, socket.local, socket.remote, socket.localPort, resolver)
 		}
 		key := processKey{pid: owner.pid, startTime: owner.startTime, interfaceName: interfaceName}
 		observed := traffic[key]

@@ -20,6 +20,8 @@ type diagSocket struct {
 	remote     netip.Addr
 	localPort  uint16
 	remotePort uint16
+	uid        uint32
+	uidKnown   bool
 	// rxBytes and txBytes are cumulative TCP_INFO counters. They are not
 	// populated by the procfs fallback, which only supplies connection rows.
 	rxBytes uint64
@@ -38,6 +40,8 @@ type udpSocket struct {
 	remote     netip.Addr
 	localPort  uint16
 	remotePort uint16
+	uid        uint32
+	uidKnown   bool
 }
 
 type processKey struct {

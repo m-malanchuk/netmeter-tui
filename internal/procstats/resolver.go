@@ -3,21 +3,29 @@ package procstats
 import (
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 type interfaceResolver struct {
-	byIP    map[netip.Addr]string
-	byIndex map[int]string
+	byIP        map[netip.Addr]string
+	byIndex     map[int]string
+	tunnelNames map[string]struct{}
 }
 
 func newInterfaceResolver() interfaceResolver {
-	resolver := interfaceResolver{byIP: make(map[netip.Addr]string), byIndex: make(map[int]string)}
+	resolver := interfaceResolver{byIP: make(map[netip.Addr]string), byIndex: make(map[int]string), tunnelNames: make(map[string]struct{})}
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return resolver
 	}
 	for _, networkInterface := range interfaces {
 		resolver.byIndex[networkInterface.Index] = networkInterface.Name
+		if isTunnelInterface(networkInterface.Name) {
+			resolver.tunnelNames[networkInterface.Name] = struct{}{}
+		}
 		addresses, err := networkInterface.Addrs()
 		if err != nil {
 			continue
@@ -34,6 +42,19 @@ func newInterfaceResolver() interfaceResolver {
 		}
 	}
 	return resolver
+}
+
+func isTunnelInterface(name string) bool {
+	data, err := os.ReadFile(filepath.Join("/sys/class/net", name, "type"))
+	if err != nil {
+		return false
+	}
+	value, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 32)
+	return err == nil && value == 65534
+}
+
+func (resolver interfaceResolver) hasTunnel() bool {
+	return len(resolver.tunnelNames) != 0
 }
 
 func (resolver interfaceResolver) resolve(socket diagSocket) string {
