@@ -77,6 +77,9 @@ func TestParseProcUDPSocketLine(t *testing.T) {
 	if socket.remote != netip.MustParseAddr("0.0.0.0") || socket.remotePort != 0 {
 		t.Fatalf("remote endpoint = %s:%d", socket.remote, socket.remotePort)
 	}
+	if socket.uid != 1000 || !socket.uidKnown {
+		t.Fatalf("socket uid = %d/%v, want 1000/true", socket.uid, socket.uidKnown)
+	}
 }
 
 func TestReadProcUDPSockets(t *testing.T) {
@@ -207,6 +210,7 @@ func TestParseDiagSocketTCPInfo(t *testing.T) {
 	binary.NativeEndian.PutUint32(payload[40:44], 7)
 	binary.NativeEndian.PutUint32(payload[44:48], 11)
 	binary.NativeEndian.PutUint32(payload[48:52], 12)
+	binary.NativeEndian.PutUint32(payload[64:68], 1000)
 	binary.NativeEndian.PutUint32(payload[68:72], 99)
 	payload[8], payload[9], payload[10], payload[11] = 127, 0, 0, 1
 	payload[24], payload[25], payload[26], payload[27] = 8, 8, 8, 8
@@ -220,6 +224,9 @@ func TestParseDiagSocketTCPInfo(t *testing.T) {
 	}
 	if socket.inode != 99 || socket.ifIndex != 7 || socket.cookie != [2]uint32{11, 12} {
 		t.Fatalf("socket identity = %+v", socket)
+	}
+	if socket.uid != 1000 || !socket.uidKnown {
+		t.Fatalf("socket uid = %d/%v, want 1000/true", socket.uid, socket.uidKnown)
 	}
 	if socket.local != netip.MustParseAddr("127.0.0.1") || socket.remote != netip.MustParseAddr("8.8.8.8") {
 		t.Fatalf("addresses = %s/%s", socket.local, socket.remote)

@@ -64,6 +64,30 @@ func TestInterfaceResolverResolutionPrecedence(t *testing.T) {
 	}
 }
 
+func TestClassifyUnownedSocketLabelsVPNTransport(t *testing.T) {
+	resolver := interfaceResolver{tunnelNames: map[string]struct{}{"proton0": {}}}
+	owner := classifyUnownedSocket(0, true, netip.IPv4Unspecified(), netip.IPv4Unspecified(), 55270, resolver)
+	if owner.name != "VPN tunnel" || owner.pid != 0 {
+		t.Fatalf("VPN owner = %+v", owner)
+	}
+}
+
+func TestClassifyUnownedSocketLabelsSystemUID(t *testing.T) {
+	resolver := interfaceResolver{}
+	owner := classifyUnownedSocket(971, true, netip.IPv4Unspecified(), netip.IPv4Unspecified(), 5353, resolver)
+	if owner.name != "system (uid 971)" {
+		t.Fatalf("system owner = %+v", owner)
+	}
+}
+
+func TestClassifyUnownedSocketKeepsUnknownWhenUIDUnavailable(t *testing.T) {
+	resolver := interfaceResolver{tunnelNames: map[string]struct{}{"proton0": {}}}
+	owner := classifyUnownedSocket(0, false, netip.IPv4Unspecified(), netip.IPv4Unspecified(), 55270, resolver)
+	if owner.name != "unknown" {
+		t.Fatalf("unknown owner = %+v", owner)
+	}
+}
+
 func TestReadProcessOwnersFixture(t *testing.T) {
 	root := t.TempDir()
 	processDir := filepath.Join(root, "123")
