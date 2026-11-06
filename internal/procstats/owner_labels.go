@@ -14,6 +14,9 @@ func classifyUnownedSocket(uid uint32, uidKnown bool, local, remote netip.Addr, 
 	if !uidKnown {
 		return processOwner{name: unknownOwnerName}
 	}
+	// A VPN tunnel's kernel/transport socket can have no visible /proc/<pid>/fd
+	// owner even though it carries application traffic. Keep it separate from
+	// normal system sockets rather than attributing its bytes to an application.
 	if resolver.hasTunnel() && uid == 0 && localPort >= 1024 &&
 		(!local.IsValid() || local.IsUnspecified()) &&
 		(!remote.IsValid() || remote.IsUnspecified()) {
