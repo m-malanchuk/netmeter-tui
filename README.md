@@ -19,6 +19,11 @@ with an optional best-effort view of traffic attributed to TCP and UDP processes
 
 Process attribution is intentionally best effort. Process totals measure observed
 socket traffic and are not expected to equal `/proc/net/dev` interface totals.
+Ownerless traffic is kept visible: sockets with a confirmed UID are labelled as
+`system (uid N)`, and ownerless high-port transport while a tunnel interface is
+detected is labelled `VPN tunnel`. The `unknown` label is reserved for cases
+where the kernel does not expose enough identity information to classify the
+socket safely.
 
 ## Requirements
 
@@ -133,7 +138,9 @@ Pause, reset, interval, theme, and quit controls are shared by both views.
 Process mode depends on information exposed by the running Linux kernel and
 procfs permissions. A socket can be hidden, close between collection steps, or
 belong to a namespace that cannot be resolved by the current process. Such rows
-may be shown as `unknown` or omitted from byte attribution.
+may be shown as `unknown` or omitted from byte attribution. VPN transport is
+reported separately from application sockets; select the VPN tunnel interface
+to inspect application traffic routed through it.
 
 When eBPF is unavailable, NetMeter TUI attempts best-effort AF_PACKET UDP
 observation. If neither mechanism is available, UDP connection rows can remain

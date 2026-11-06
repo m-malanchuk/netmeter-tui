@@ -46,11 +46,12 @@ func (c *Collector) collectBPFUDP(ctx context.Context, sockets []udpSocket, owne
 					inode: diag.inode, family: family,
 					local: diag.local, remote: diag.remote,
 					localPort: diag.localPort, remotePort: diag.remotePort,
+					uid: diag.uid, uidKnown: diag.uidKnown,
 				}
 			}
 			owner, found := owners[diag.inode]
 			if !found {
-				owner = processOwner{name: "unknown"}
+				owner = classifyUnownedSocket(socket.uid, socket.uidKnown, socket.local, socket.remote, socket.localPort, resolver)
 			}
 			identities[cookie] = udpBPFIdentity{inode: diag.inode, owner: owner, socket: socket}
 		}
@@ -96,6 +97,9 @@ func (c *Collector) applyBPFUDPSnapshot(values map[udpBPFKey]udpBPFValue, identi
 		interfaceName := resolver.byIndex[int(key.IfIndex)]
 		if interfaceName == "" {
 			interfaceName = resolver.resolveUDP(identity.socket)
+		}
+		if identity.owner.pid == 0 {
+			identity.owner = classifyUnownedSocket(identity.socket.uid, identity.socket.uidKnown, identity.socket.local, identity.socket.remote, identity.socket.localPort, resolver)
 		}
 		process := processKey{pid: identity.owner.pid, startTime: identity.owner.startTime, interfaceName: interfaceName}
 		observed := traffic[process]
