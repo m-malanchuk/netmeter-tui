@@ -25,6 +25,10 @@ type processStateKey struct {
 	pid           int
 	startTime     uint64
 	interfaceName string
+	// A zero start time means procfs could not provide a generation identity.
+	// Include the observed name in that fallback key so a PID with unavailable
+	// generation data cannot silently inherit another process's totals.
+	name string
 }
 
 type processState struct {
@@ -45,8 +49,10 @@ func NewProcessMonitor() *ProcessMonitor {
 }
 
 // Update incorporates one process snapshot. ProcessCounters contain deltas
-// since the previous collector call, so a first observation always has zero
-// rate and does not create a startup spike.
+// since the previous collector call, so a first observation (including a
+// process appearing after startup) always establishes a baseline and does not
+// create a startup spike. A process missing from a snapshot is removed; a later
+// reappearance starts a fresh generation.
 func (m *ProcessMonitor) Update(snapshot procstats.Snapshot) {
 	if snapshot.At.IsZero() {
 		return
@@ -63,7 +69,7 @@ func (m *ProcessMonitor) Update(snapshot procstats.Snapshot) {
 	m.lastAt = snapshot.At
 	seen := make(map[processStateKey]struct{}, len(snapshot.Processes))
 	for _, counters := range snapshot.Processes {
-		key := processStateKey{pid: counters.PID, startTime: counters.StartTime, interfaceName: counters.Interface}
+		key := processKey(counters)
 		seen[key] = struct{}{}
 		state := m.states[key]
 		if state == nil {
@@ -74,6 +80,8 @@ func (m *ProcessMonitor) Update(snapshot procstats.Snapshot) {
 				Interface: counters.Interface,
 			}}
 			m.states[key] = state
+			state.stats.Connections = counters.Connections
+			continue
 		}
 		state.stats.Name = counters.Name
 		state.stats.Interface = counters.Interface
@@ -82,9 +90,12 @@ func (m *ProcessMonitor) Update(snapshot procstats.Snapshot) {
 		state.stats.TX.addSample(counters.TXBytes, elapsed)
 		state.stats.RX.addTotal(counters.RXBytes)
 		state.stats.TX.addTotal(counters.TXBytes)
-		state.elapsed += elapsed
-		state.stats.RX.Average = float64(state.stats.RX.SessionTotal) / state.elapsed.Seconds()
-		state.stats.TX.Average = float64(state.stats.TX.SessionTotal) / state.elapsed.Seconds()
+		state.elapsed = saturatingDurationAdd(state.elapsed, elapsed)
+		seconds := state.elapsed.Seconds()
+		if seconds > 0 {
+			state.stats.RX.Average = float64(state.stats.RX.SessionTotal) / seconds
+			state.stats.TX.Average = float64(state.stats.TX.SessionTotal) / seconds
+		}
 		state.stats.Total = saturatingAdd(state.stats.RX.Total, state.stats.TX.Total)
 	}
 	for key := range m.states {
@@ -139,7 +150,7 @@ func (m *ProcessMonitor) Stats(interfaceName string) []ProcessStats {
 
 func (m *ProcessMonitor) replaceUnavailable(snapshot procstats.Snapshot) {
 	for _, counters := range snapshot.Processes {
-		key := processStateKey{pid: counters.PID, startTime: counters.StartTime, interfaceName: counters.Interface}
+		key := processKey(counters)
 		m.states[key] = &processState{stats: ProcessStats{
 			PID:         counters.PID,
 			StartTime:   counters.StartTime,
@@ -148,6 +159,14 @@ func (m *ProcessMonitor) replaceUnavailable(snapshot procstats.Snapshot) {
 			Connections: counters.Connections,
 		}}
 	}
+}
+
+func processKey(counters procstats.ProcessCounters) processStateKey {
+	key := processStateKey{pid: counters.PID, startTime: counters.StartTime, interfaceName: counters.Interface}
+	if counters.StartTime == 0 {
+		key.name = counters.Name
+	}
+	return key
 }
 
 func (metric *Metric) addSample(delta uint64, elapsed time.Duration) {
@@ -161,9 +180,19 @@ func (metric *Metric) addSample(delta uint64, elapsed time.Duration) {
 		metric.Maximum = rate
 	}
 	metric.SessionTotal = saturatingAdd(metric.SessionTotal, delta)
-	metric.Average = float64(metric.SessionTotal) / elapsed.Seconds()
 }
 
 func (metric *Metric) addTotal(delta uint64) {
 	metric.Total = saturatingAdd(metric.Total, delta)
+}
+
+func saturatingDurationAdd(current, delta time.Duration) time.Duration {
+	if delta <= 0 {
+		return current
+	}
+	const maxDuration = time.Duration(1<<63 - 1)
+	if current > maxDuration-delta {
+		return maxDuration
+	}
+	return current + delta
 }

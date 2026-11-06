@@ -9,6 +9,14 @@ import (
 	"github.com/m-malanchuk/netmeter-tui/internal/netstats"
 )
 
+func TestDirectionStateSaturatesElapsedDuration(t *testing.T) {
+	state := directionState{elapsed: time.Duration(1<<63 - 2), history: NewHistory(1)}
+	state.addSample(1, time.Second)
+	if state.elapsed != time.Duration(1<<63-1) {
+		t.Fatalf("elapsed = %s, want saturated maximum", state.elapsed)
+	}
+}
+
 func TestFirstSampleHasNoSpike(t *testing.T) {
 	monitor := New(8)
 	at := time.Unix(100, 0)
@@ -140,6 +148,26 @@ func TestNonPositiveElapsedDoesNotCorruptBaseline(t *testing.T) {
 	stats, _ := monitor.Stats("eth0")
 	assertClose(t, stats.RX.Current, 200)
 	assertClose(t, stats.RX.Average, 200)
+}
+
+func TestAverageKeepsLargeGenerationTotalsExactUntilPresentation(t *testing.T) {
+	monitor := New(8)
+	start := time.Unix(100, 0)
+	const firstDelta = uint64(1<<53 + 1)
+	monitor.Update(snapshot(start, counters("eth0", 0, 0)))
+	monitor.Update(snapshot(start.Add(time.Second), counters("eth0", firstDelta, firstDelta)))
+	monitor.Update(snapshot(start.Add(2*time.Second), counters("eth0", firstDelta+1, firstDelta+1)))
+
+	stats, ok := monitor.Stats("eth0")
+	if !ok {
+		t.Fatal("Stats() did not find interface")
+	}
+	// The exact generation total is 2^53+2 over two seconds. Converting only
+	// after the integer accumulation preserves the representable +1 in the
+	// resulting average; a float accumulator loses it on the second sample.
+	want := float64((uint64(1) << 52) + 1)
+	assertClose(t, stats.RX.Average, want)
+	assertClose(t, stats.TX.Average, want)
 }
 
 func snapshot(at time.Time, interfaces ...netstats.Counters) netstats.Snapshot {
