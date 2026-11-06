@@ -78,6 +78,40 @@ func TestCollectorHonorsCanceledContext(t *testing.T) {
 	}
 }
 
+func TestCollectorUsesInjectedClock(t *testing.T) {
+	tempFile := t.TempDir() + "/dev"
+	if err := writeFile(tempFile, fixture); err != nil {
+		t.Fatal(err)
+	}
+
+	want := time.Unix(123, 456)
+	collector := NewCollectorFromPath(tempFile)
+	collector.now = func() time.Time { return want }
+	snapshot, err := collector.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if !snapshot.At.Equal(want) {
+		t.Fatalf("Collect() timestamp = %v, want %v", snapshot.At, want)
+	}
+}
+
+func TestRealProcNetDevCollection(t *testing.T) {
+	snapshot, err := NewCollector().Collect(context.Background())
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("host procfs is unavailable: %v", err)
+		}
+		t.Fatalf("real /proc/net/dev collection failed: %v", err)
+	}
+	if snapshot.At.IsZero() {
+		t.Fatal("real collection returned zero timestamp")
+	}
+	if len(snapshot.Interfaces) == 0 {
+		t.Fatal("real /proc/net/dev collection returned no interfaces")
+	}
+}
+
 func writeFile(path string, contents string) error {
 	return os.WriteFile(path, []byte(contents), 0o600)
 }
