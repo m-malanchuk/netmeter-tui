@@ -38,5 +38,5 @@ go.work.sum
 .DS_Store
 Thumbs.db
 
-# Private project notes
+# Local project design notes (not part of the published source tree)
 /docs/

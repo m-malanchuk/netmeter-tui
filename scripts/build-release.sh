@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
     printf 'Usage: %s <version>\n' "${0##*/}" >&2
-    printf 'Example: %s 0.1.0\n' "${0##*/}" >&2
+    printf 'Example: %s 0.2.0\n' "${0##*/}" >&2
 }
 
 if (( $# == 1 )) && [[ "$1" == "-h" || "$1" == "--help" ]]; then
